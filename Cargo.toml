@@ -1,0 +1,16 @@
+[package]
+name = "vr-rust-game"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+glam = { version = "0.33.5", features = ["bytemuck"] }
+rapier3d = "0.35.2"
+wgpu = "28"
+indite = { git = "https://github.com/celphase/indite" }
+openxr = "0.21"
+ctrlc = "3.5.2"
+anyhow = "1.0.104"
+bytemuck = "1.25.2"
+winit = "0.30.13"
+gltf = "1.4.1"
