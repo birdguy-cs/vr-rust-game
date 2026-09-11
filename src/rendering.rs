@@ -11,7 +11,7 @@ use wgpu::{
 };
 
 use crate::{
-    VIEW_TYPE, actions::{self, ActionSetBundle}, math, models::Model, session::SessionBundle, world::World,
+    VIEW_TYPE, actions::{self, ActionSetBundle}, math, models::Model, session::SessionBundle, window::Window, world::World,
 };
 
 #[repr(C)]
@@ -28,6 +28,17 @@ pub struct RenderContext {
 
     pub uniform_layout: BindGroupLayout,
     pub render_pipeline: RenderPipeline,
+
+    pub depth_buffer: Option<DepthBuffer>,
+
+    // Window shit
+    pub resolved_texture: wgpu::Texture,
+    pub resolved_view: wgpu::TextureView,
+
+    pub window_staging_buffer: wgpu::Buffer,
+    pub padded_bytes_per_row: u32,
+    pub xr_render_height: u32,
+    pub xr_render_width: u32,
 }
 
 impl RenderContext {
@@ -39,6 +50,65 @@ impl RenderContext {
         let uniform_layout = create_uniform_layout(&device);
         let render_pipeline = create_render_pipeline(&device, &uniform_layout);
 
+        let depth_buffer = None;
+
+        // Set up rendering to the window
+        let views = xr_instance
+            .enumerate_view_configuration_views(
+                xr_system,
+                openxr::ViewConfigurationType::PRIMARY_STEREO,
+            )
+            .unwrap();
+
+        let width = views[0].recommended_image_rect_width;
+        let height = views[0].recommended_image_rect_height;
+
+        let bytes_per_pixel = 4; // Assuming Rgba8Unorm or Bgra8Unorm
+        let unpadded_bytes_per_row = width * bytes_per_pixel;
+
+        // Calculate 256-byte alignment padding
+        let align = 256;
+        let padding = (align - (unpadded_bytes_per_row % align)) % align;
+        let padded_bytes_per_row = unpadded_bytes_per_row + padding;
+
+        let buffer_size = (padded_bytes_per_row * height) as wgpu::BufferAddress;
+
+        // Create the staging buffer on the VR device
+        let window_staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("VR to Window Staging Buffer"),
+            size: buffer_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        let resolved_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("VR Resolved Texture"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 2,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+
+        let resolved_view = resolved_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("VR Resolved View"),
+            format: Some(TextureFormat::Rgba8UnormSrgb),
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            aspect: wgpu::TextureAspect::All,
+            base_mip_level: 0,
+            mip_level_count: Some(1),
+            base_array_layer: 0,
+            array_layer_count: Some(2),
+            usage: None,
+        });
+
         Self {
             instance,
             device,
@@ -46,8 +116,55 @@ impl RenderContext {
 
             uniform_layout,
             render_pipeline,
+
+            depth_buffer,
+
+            resolved_texture,
+            resolved_view,
+
+            window_staging_buffer,
+            padded_bytes_per_row,
+            xr_render_height: height,
+            xr_render_width: width,
         }
     }
+}
+
+#[derive(Clone)]
+pub struct DepthBuffer {
+    pub depth_texture: wgpu::Texture,
+    pub depth_view: TextureView,
+}
+
+pub fn create_depth_buffer(device: &Device, width: u32, height: u32,) -> DepthBuffer {
+    let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("VR Depth Texture"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 2,
+        },
+        mip_level_count: 1,
+        sample_count: 4,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Depth32Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+
+    let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("VR Depth View"),
+        format: Some(wgpu::TextureFormat::Depth32Float),
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        aspect: wgpu::TextureAspect::DepthOnly,
+        base_mip_level: 0,
+        mip_level_count: Some(1),
+        base_array_layer: 0,
+        array_layer_count: Some(2),
+        usage: None,
+    });
+
+    DepthBuffer { depth_texture, depth_view }
 }
 
 fn create_uniform_layout(device: &Device) -> BindGroupLayout {
@@ -124,7 +241,13 @@ fn create_render_pipeline(
             targets: &[Some(TextureFormat::Rgba8UnormSrgb.into())],
         }),
         primitive: PrimitiveState::default(),
-        depth_stencil: None,
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth32Float,
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::Less,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
         multisample: wgpu::MultisampleState {
             count: 4,
             ..Default::default()
@@ -148,6 +271,7 @@ pub fn render_frame(
     session_bundle: &mut SessionBundle,
     action_set_bundle: &ActionSetBundle,
     world: &mut World,
+    window: &Option<Window>,
 ) {
     // Block until the previous frame is finished displaying, and is ready for another one.
     // Also returns a prediction of when the next frame will be displayed, for use with
@@ -178,13 +302,6 @@ pub fn render_frame(
         .acquire_image()
         .unwrap();
 
-    // actions::read_actions(
-    //     &session_bundle.session,
-    //     action_set_bundle,
-    //     &session_bundle.stage,
-    //     &xr_frame_state,
-    // );
-
     let hand_pos = actions::get_hands(
         &session_bundle.session,
         action_set_bundle,
@@ -195,9 +312,9 @@ pub fn render_frame(
     world.hands = hand_pos;
 
     let models = world.get_world();
-    
-    // Get the view for this frame
-    let (_, view) = &session_bundle.swapchain_textures[image_index as usize];
+
+    // Get the texture
+    let (source_texture, _) = &session_bundle.swapchain_textures[image_index as usize];
 
     // Fetch the view transforms. To minimize latency, we intentionally do this *after*
     // recording commands to render the scene, i.e. at the last possible moment before
@@ -213,48 +330,52 @@ pub fn render_frame(
         )
         .unwrap();
 
-    let (_, xr_views) = session_bundle
-        .session
-        .locate_views(
-            VIEW_TYPE,
-            xr_frame_state.predicted_display_time,
-            &session_bundle.stage,
-        )
-        .unwrap();
-    
     let mut model_uniforms = Vec::new();
-    
+
     for model in &models {
         let (buffer, bind_group) =
             create_model_uniform(
                 &render_context.device,
                 &render_context.uniform_layout,
             );
-    
+
         let model_matrix = Mat4::from_scale_rotation_translation(
             model.scale,
             model.rotation,
             model.position,
         );
-    
+
         write_uniform_buffer(
             &buffer,
             &xr_views,
             model_matrix,
         );
-    
+
         model_uniforms.push((buffer, bind_group));
+    }
+
+    let mut depth_view = None;
+
+    if let Some(depth_buffer) = render_context.depth_buffer.clone() {
+        depth_view = Some(depth_buffer.depth_view);
     }
 
     let command_buffer = record_command_buffer(
         &render_context.device,
         &render_context.render_pipeline,
         &session_bundle.multisampled_framebuffer,
-        view,
+        &render_context.resolved_view,
+        &depth_view.expect("Couldn't get the depth view"),
         &model_uniforms,
         models.clone(),
+        &render_context.resolved_texture,
+        source_texture,
+        &render_context.window_staging_buffer,
+        render_context.padded_bytes_per_row,
+        render_context.xr_render_width,
+        render_context.xr_render_height,
     );
-    
+
     // Wait until the image is available to render to before beginning work on the GPU. The
     // compositor could still be reading from it.
     let mut xr_swapchain = session_bundle.swapchain_handle.lock().unwrap();
@@ -263,6 +384,35 @@ pub fn render_frame(
     // Submit the previously prepared command buffer
     render_context.queue.submit(Some(command_buffer));
 
+    // Give frame to the window
+    // Ask the staging buffer to map its bytes asynchronously
+    let buffer_slice = render_context.window_staging_buffer.slice(..);
+    let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
+    buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+        sender.send(result).unwrap();
+    });
+
+    // Poll xr device context to flush and execute the mapping callback
+    let _ = render_context.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
+
+    // Block until the mapped range is completely downloaded to CPU memory
+    pollster::block_on(receiver.receive()).unwrap().unwrap();
+
+    // Extract the bytes into a clean standard Vector
+    let raw_bytes = {
+        let data_view = buffer_slice.get_mapped_range();
+        data_view.to_vec()
+    }; // data_view borrow safely drops here
+
+    // Unmap immediately so the GPU is free to reuse it on the next frame loop
+    render_context.window_staging_buffer.unmap();
+
+    // Deliver the bytes safely down into your window thread's event loop
+    if let Some(w) = window {
+        w.render(raw_bytes, render_context.xr_render_width, render_context.xr_render_height, render_context.padded_bytes_per_row);
+    }
+
+    // Finish rest of the shit
     xr_swapchain.release_image().unwrap();
     end_frame(
         environment_blend_mode,
@@ -275,53 +425,95 @@ pub fn render_frame(
     );
 }
 
+// Render pass
 fn record_command_buffer(
     device: &Device,
     render_pipeline: &RenderPipeline,
     multisampled_framebuffer: &TextureView,
-    view: &TextureView,
+    resolved_view: &TextureView,
+    depth_view: &TextureView,
     model_uniforms: &[(Buffer, BindGroup)],
-    models: Vec<&Model>
-) -> CommandBuffer {
-    let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
+    models: Vec<&Model>,
 
+    // Intermediate resolved texture
+    resolved_texture: &wgpu::Texture,
+
+    // OpenXR swapchain texture
+    xr_texture_destination: &wgpu::Texture,
+
+    // Desktop window
+    window_staging_buffer_destination: &wgpu::Buffer,
+    padded_bytes_per_row: u32,
+    width: u32,
+    height: u32,
+) -> CommandBuffer {
+    let mut encoder = device.create_command_encoder(
+        &CommandEncoderDescriptor {
+            label: Some("VR Frame Encoder"),
+        },
+    );
+
+    // Render the MSAA framebuffer and resolve into our own texture.
     {
         let attachment = RenderPassColorAttachment {
             view: multisampled_framebuffer,
             depth_slice: None,
-            resolve_target: Some(view),
+
+            // Don't resolve directly into OpenXR.
+            resolve_target: Some(resolved_view),
+
             ops: Operations {
                 load: LoadOp::Clear(Color::BLUE),
                 store: StoreOp::Discard,
             },
         };
-        let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
-            label: None,
-            color_attachments: &[Some(attachment)],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: NonZero::new(0b11),
-        });
+
+        let mut render_pass = encoder.begin_render_pass(
+            &RenderPassDescriptor {
+                label: Some("VR Render Pass"),
+                color_attachments: &[Some(attachment)],
+
+                depth_stencil_attachment: Some(
+                    wgpu::RenderPassDepthStencilAttachment {
+                        view: depth_view,
+
+                        depth_ops: Some(Operations {
+                            load: LoadOp::Clear(1.0),
+                            store: StoreOp::Discard,
+                        }),
+
+                        stencil_ops: None,
+                    },
+                ),
+
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: NonZero::new(0b11),
+            },
+        );
 
         render_pass.set_pipeline(render_pipeline);
-        
+
         for (model_index, model) in models.iter().enumerate() {
             let (_, bind_group) = &model_uniforms[model_index];
-        
-            render_pass.set_bind_group(0, bind_group, &[]);
-        
+
+            render_pass.set_bind_group(
+                0,
+                bind_group,
+                &[],
+            );
+
             for mesh in &model.meshes {
                 render_pass.set_vertex_buffer(
                     0,
                     mesh.vertex_buffer.slice(..),
                 );
-        
+
                 render_pass.set_index_buffer(
                     mesh.index_buffer.slice(..),
                     wgpu::IndexFormat::Uint32,
                 );
-        
+
                 render_pass.draw_indexed(
                     0..mesh.index_count,
                     0,
@@ -330,6 +522,61 @@ fn record_command_buffer(
             }
         }
     }
+
+    // Copy resolved stereo texture to OpenXR swapchain
+    encoder.copy_texture_to_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: resolved_texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyTextureInfo {
+            texture: xr_texture_destination,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 2,
+        },
+    );
+
+    // Copy left eye to cpu staging buffer
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: resolved_texture,
+            mip_level: 0,
+
+            // z = 0 means left eye
+            origin: wgpu::Origin3d {
+                x: 0,
+                y: 0,
+                z: 0,
+            },
+
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: window_staging_buffer_destination,
+
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded_bytes_per_row),
+                rows_per_image: Some(height),
+            },
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+
+            // Only copy ONE layer because we're staging
+            // buffer only has room for one eye.
+            depth_or_array_layers: 1,
+        },
+    );
 
     encoder.finish()
 }

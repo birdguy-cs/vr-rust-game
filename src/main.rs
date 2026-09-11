@@ -1,9 +1,14 @@
+#![windows_subsystem = "windows"]
+// TODO: Figure out how to compile and get this game running on Android OpenXR
+
 mod actions;
 mod math;
 mod rendering;
 mod session;
 mod world;
 mod models;
+mod window;
+mod logging;
 
 use world::World;
 
@@ -15,9 +20,9 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{bail, Error};
+use anyhow::{Error};
 
-use crate::rendering::RenderContext;
+use crate::rendering::{RenderContext, create_depth_buffer};
 
 const VIEW_TYPE: openxr::ViewConfigurationType = openxr::ViewConfigurationType::PRIMARY_STEREO;
 
@@ -26,12 +31,7 @@ const VIEW_COUNT: u32 = 2;
 pub fn main() -> Result<(), Error> {
     let ctrlc_request_exit = create_ctrlc_handler();
 
-    let mut xr_entry = None;
-    unsafe {
-        xr_entry = Some(openxr::Entry::load());
-    }
-
-    let xr_entry = xr_entry.unwrap().expect("Unable to load OpenXR");
+    let xr_entry = unsafe {openxr::Entry::load()}.expect("Unable to load OpenXR");
 
     let xr_instance = create_openxr_instance(&xr_entry)?;
     let _debug_utils = indite::DebugUtils::new(&xr_entry, &xr_instance);
@@ -47,15 +47,32 @@ pub fn main() -> Result<(), Error> {
         .enumerate_environment_blend_modes(xr_system, VIEW_TYPE)
         .unwrap()[0];
 
-    let render_context = RenderContext::new(&xr_instance, xr_system);
+    let mut render_context = RenderContext::new(&xr_instance, xr_system);
     let mut session_bundle = session::create_session(&xr_instance, xr_system, &render_context);
     let action_set_bundle = actions::create_action_set(&xr_instance, &session_bundle.session);
+
+    let views = xr_instance
+        .enumerate_view_configuration_views(
+            xr_system,
+            openxr::ViewConfigurationType::PRIMARY_STEREO,
+        )
+        .unwrap();
+
+    let width = views[0].recommended_image_rect_width;
+    let height = views[0].recommended_image_rect_height;
+
+    render_context.depth_buffer = Some(create_depth_buffer(&render_context.device, width, height));
 
     // Main loop
     let mut event_storage = openxr::EventDataBuffer::new();
     let mut session_running = false;
 
+    // Create the game world and the window
     let mut game_world = World::new(&render_context.device);
+    #[cfg(not(target_os = "android"))]
+    let window: Option<window::Window> = Some(window::create_window());
+    #[cfg(target_os = "android")]
+    let window: Option<window::Window> = None;
 
     loop {
         let should_continue = handle_ctrlc(&ctrlc_request_exit, &session_bundle.session);
@@ -73,6 +90,13 @@ pub fn main() -> Result<(), Error> {
             break;
         }
 
+        if let Some(window) = &window {
+            let should_continue = !window.exit.load(Ordering::Relaxed);
+            if !should_continue {
+                break;
+            }
+        }
+
         if !session_running {
             // Don't hotloop the CPU
             std::thread::sleep(Duration::from_millis(100));
@@ -87,9 +111,13 @@ pub fn main() -> Result<(), Error> {
             &mut session_bundle,
             &action_set_bundle,
             &mut game_world,
+            &window,
         );
     }
 
+    if let Some(window) = window {
+        window.close();
+    }
     println!("exiting cleanly");
     Ok(())
 }
@@ -100,13 +128,21 @@ fn create_openxr_instance(xr_entry: &openxr::Entry) -> Result<openxr::Instance, 
     // extension is present, it's still possible you may not be able to use it. For example: the
     // hand tracking extension may be present, but the hand sensor might not be plugged in or turned
     // on. There are often additional checks that should be made before using certain features!
-    let available_extensions = xr_entry.enumerate_extensions().unwrap();
+    let available_extensions = match xr_entry.enumerate_extensions() {
+        Ok(exts) => exts,
+        Err(openxr::sys::Result::ERROR_RUNTIME_UNAVAILABLE) => {
+            popup_bail!("No active OpenXR runtime found.");
+        }
+        Err(e) => {
+            popup_bail!("Failed to enumerate extensions due to an unexpected error: {:?}", e);
+        }
+    };
 
     // If a required extension isn't present, you want to ditch out here! It's possible something
     // like your rendering API might not be provided by the active runtime. APIs like OpenGL don't
     // have universal support.
     if !available_extensions.khr_vulkan_enable2 {
-        bail!("vulkan openxr extension not available");
+        popup_bail!("Vulkan OpenXR extension not available");
     }
 
     // Initialize OpenXR with the extensions we've found!
@@ -120,9 +156,9 @@ fn create_openxr_instance(xr_entry: &openxr::Entry) -> Result<openxr::Instance, 
     let xr_instance = xr_entry
         .create_instance(
             &openxr::ApplicationInfo {
-                application_name: "My balls are itchy.",
+                application_name: "Epic cool vr game",
                 application_version: 0,
-                engine_name: "My balls are itchy.",
+                engine_name: "FVR engine",
                 engine_version: 0,
                 api_version: openxr::Version::new(1, 0, 0),
             },
@@ -163,7 +199,7 @@ fn handle_ctrlc(
         match xr_session.request_exit() {
             Ok(()) => {}
             Err(openxr::sys::Result::ERROR_SESSION_NOT_RUNNING) => return false,
-            Err(e) => panic!("{}", e),
+            Err(e) => popup_panic!("{}", e),
         }
     }
 

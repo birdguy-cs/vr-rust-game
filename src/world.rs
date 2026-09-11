@@ -1,4 +1,4 @@
-use glam::{Quat, Vec3};
+use glam::{Vec3};
 use wgpu::Device;
 
 use crate::{actions::{XRHands}, models::Model};
@@ -12,10 +12,10 @@ pub struct World {
 
 impl World {
     pub fn new(device: &Device) -> World {
-        let mut left_hand = Model::load(&device, "assets/cube.glb").expect("Couldn't load left hand model");
-        let mut right_hand = Model::load(&device, "assets/cube.glb").expect("Couldn't load right hand model");
-        left_hand.scale = Vec3::new(0.1, 0.1, 0.1);
-        right_hand.scale = Vec3::new(0.1, 0.1, 0.1);
+        let mut left_hand = Model::load(&device, "gun.glb").expect("Couldn't load left hand model");
+        let mut right_hand = Model::load(&device, "gun.glb").expect("Couldn't load right hand model");
+        left_hand.scale = Vec3::new(0.05, 0.05, 0.05);
+        right_hand.scale = Vec3::new(0.05, 0.05, 0.05);
 
         let world = World {
             models: Vec::new(),
@@ -23,7 +23,7 @@ impl World {
             left_hand,
             right_hand,
         };
-        
+
         world
     }
 

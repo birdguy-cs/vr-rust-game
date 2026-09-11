@@ -1,6 +1,11 @@
 use glam::{Quat, Vec3};
 use anyhow::{Context, Result};
 use wgpu::util::DeviceExt;
+use rust_embed::Embed;
+
+#[derive(Embed)]
+#[folder = "assets/"]
+struct Assets;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -58,9 +63,12 @@ impl Model {
         device: &wgpu::Device,
         path: &str,
     ) -> Result<Self> {
+        let asset = Assets::get(path)
+            .with_context(|| format!("Embedded model not found: {path}"))?;
+    
         let (document, buffers, _images) =
-            gltf::import(path)
-                .with_context(|| format!("Failed to load model: {path}"))?;
+            gltf::import_slice(asset.data.as_ref())
+                .context("Failed to import embedded GLB")?;
 
         let mut meshes = Vec::new();
 

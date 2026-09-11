@@ -70,6 +70,7 @@ pub fn create_action_set(
     }
 }
 
+// Dead code
 pub fn read_actions(
     xr_session: &openxr::Session<openxr::Vulkan>,
     action_set_bundle: &ActionSetBundle,
