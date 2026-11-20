@@ -56,6 +56,9 @@ pub struct Mesh {
     pub vertex_buffer: wgpu::Buffer,
     pub index_buffer: wgpu::Buffer,
     pub index_count: u32,
+
+    pub vertices: Vec<[f32; 3]>,
+    pub indices: Vec<u32>,
 }
 
 impl Model {
@@ -161,6 +164,8 @@ impl Model {
                     vertex_buffer,
                     index_buffer,
                     index_count: indices.len() as u32,
+                    vertices: positions,
+                    indices,
                 });
             }
         }

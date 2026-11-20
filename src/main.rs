@@ -1,5 +1,6 @@
 #![windows_subsystem = "windows"]
 // TODO: Figure out how to compile and get this game running on Android OpenXR
+// TODO: Clean up android specific changes
 
 mod actions;
 mod math;
@@ -7,8 +8,15 @@ mod rendering;
 mod session;
 mod world;
 mod models;
+#[cfg(not(target_os = "android"))]
 mod window;
 mod logging;
+mod physics_manager;
+
+#[cfg(target_os = "android")]
+type AppHandle = android_activity::AndroidApp;
+#[cfg(not(target_os = "android"))]
+type AppHandle = ();
 
 use world::World;
 
@@ -28,10 +36,28 @@ const VIEW_TYPE: openxr::ViewConfigurationType = openxr::ViewConfigurationType::
 
 const VIEW_COUNT: u32 = 2;
 
-pub fn main() -> Result<(), Error> {
-    let ctrlc_request_exit = create_ctrlc_handler();
+#[cfg(not(target_os = "android"))]
+pub fn main() -> Result<(), Error> { run(()) }
 
-    let xr_entry = unsafe {openxr::Entry::load()}.expect("Unable to load OpenXR");
+#[allow(unused_variables)]
+pub fn run(app: AppHandle) -> Result<(), Error> {
+    #[cfg(not(target_os = "android"))]
+    let ctrlc_request_exit = create_ctrlc_handler();
+    #[cfg(target_os = "android")]
+    let ctrlc_request_exit = Arc::new(AtomicBool::new(false));
+
+    #[cfg(not(target_os = "android"))]
+    let xr_entry = openxr::Entry::linked();
+    #[cfg(target_os = "android")]
+    let xr_entry = unsafe { openxr::Entry::load() }
+        .expect("Couldn't load libopenxr_loader.so");
+
+    #[cfg(target_os = "android")]
+    if let Err(e) = xr_entry.initialize_android_loader() {
+        popup_error!("Failed to initialize OpenXR Android loader: {:?}", e);
+        // Return an Err variant to match your function signature!
+        return Err(anyhow::anyhow!("Android loader failed: {:?}", e).into());
+    }
 
     let xr_instance = create_openxr_instance(&xr_entry)?;
     let _debug_utils = indite::DebugUtils::new(&xr_entry, &xr_instance);
@@ -72,12 +98,22 @@ pub fn main() -> Result<(), Error> {
     #[cfg(not(target_os = "android"))]
     let window: Option<window::Window> = Some(window::create_window());
     #[cfg(target_os = "android")]
-    let window: Option<window::Window> = None;
+    let window: Option<String> = None;
 
     loop {
         let should_continue = handle_ctrlc(&ctrlc_request_exit, &session_bundle.session);
         if !should_continue {
             break;
+        }
+
+        #[cfg(target_os = "android")]
+        {
+            use android_activity::{MainEvent, PollEvent};
+            let mut destroy = false;
+            app.poll_events(Some(Duration::ZERO), |ev| {
+                if let PollEvent::Main(MainEvent::Destroy) = ev { destroy = true; }
+            });
+            if destroy { break; }
         }
 
         let should_continue = handle_instance_events(
@@ -90,6 +126,7 @@ pub fn main() -> Result<(), Error> {
             break;
         }
 
+        #[cfg(not(target_os = "android"))]
         if let Some(window) = &window {
             let should_continue = !window.exit.load(Ordering::Relaxed);
             if !should_continue {
@@ -111,10 +148,12 @@ pub fn main() -> Result<(), Error> {
             &mut session_bundle,
             &action_set_bundle,
             &mut game_world,
+            #[cfg(not(target_os = "android"))]
             &window,
         );
     }
 
+    #[cfg(not(target_os = "android"))]
     if let Some(window) = window {
         window.close();
     }
@@ -145,12 +184,20 @@ fn create_openxr_instance(xr_entry: &openxr::Entry) -> Result<openxr::Instance, 
         popup_bail!("Vulkan OpenXR extension not available");
     }
 
-    // Initialize OpenXR with the extensions we've found!
     let mut enabled_extensions = openxr::ExtensionSet::default();
     enabled_extensions.khr_vulkan_enable2 = true;
 
-    // TODO: Only enable debugging when given debugging flags
+    #[cfg(target_os = "android")]
+    {
+        if !available_extensions.khr_android_create_instance {
+            popup_bail!("XR_KHR_android_create_instance not available");
+        }
+        enabled_extensions.khr_android_create_instance = true;
+    }
+
     enabled_extensions.ext_debug_utils = true;
+
+    // TODO: Only enable debugging when given debugging flags
     // let core_validation_layer_name = "XR_APILAYER_LUNARG_core_validation";
 
     let xr_instance = xr_entry
@@ -245,3 +292,20 @@ fn handle_instance_events(
 
     true
 }
+
+// Oculus / OpenXR support
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+fn android_main(app: android_activity::AndroidApp) {
+    if let Err(e) = run(app) {
+        eprintln!("Game crashed: {e:?}");
+    }
+}
+
+#[cfg(target_os = "android")]
+fn main() {}
+
+// TODO: More work on openxr for android
+/*
+ adb logcat *:E | grep -i "openxr\|wgpu\|rust\|VR_GAME"
+*/

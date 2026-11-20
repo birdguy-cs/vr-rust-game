@@ -70,61 +70,6 @@ pub fn create_action_set(
     }
 }
 
-// Dead code
-pub fn read_actions(
-    xr_session: &openxr::Session<openxr::Vulkan>,
-    action_set_bundle: &ActionSetBundle,
-    xr_stage: &openxr::Space,
-    xr_frame_state: &openxr::FrameState,
-) {
-    let active_action_set = (&action_set_bundle.action_set).into();
-    xr_session.sync_actions(&[active_action_set]).unwrap();
-
-    // Find where our controllers are located in the Stage space
-    let left_location = action_set_bundle
-        .left_space
-        .locate(xr_stage, xr_frame_state.predicted_display_time)
-        .unwrap();
-
-    let right_location = action_set_bundle
-        .right_space
-        .locate(xr_stage, xr_frame_state.predicted_display_time)
-        .unwrap();
-
-    let mut printed = false;
-    if action_set_bundle
-        .left_action
-        .is_active(xr_session, openxr::Path::NULL)
-        .unwrap()
-    {
-        print!(
-            "left Hand: ({:0<12},{:0<12},{:0<12}), ",
-            left_location.pose.position.x,
-            left_location.pose.position.y,
-            left_location.pose.position.z
-        );
-        printed = true;
-    }
-
-    if action_set_bundle
-        .right_action
-        .is_active(xr_session, openxr::Path::NULL)
-        .unwrap()
-    {
-        print!(
-            "right Hand: ({:0<12},{:0<12},{:0<12})",
-            right_location.pose.position.x,
-            right_location.pose.position.y,
-            right_location.pose.position.z
-        );
-        printed = true;
-    }
-
-    if printed {
-        println!();
-    }
-}
-
 pub struct XRHands {
     pub left_position: Vec3,
     pub left_rotation: Quat,

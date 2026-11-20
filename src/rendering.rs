@@ -11,8 +11,11 @@ use wgpu::{
 };
 
 use crate::{
-    VIEW_TYPE, actions::{self, ActionSetBundle}, math, models::Model, session::SessionBundle, window::Window, world::World,
+    VIEW_TYPE, actions::{self, ActionSetBundle}, math, models::Model, session::SessionBundle, world::World,
 };
+
+#[cfg(not(target_os = "android"))]
+use crate::window::Window;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -132,7 +135,7 @@ impl RenderContext {
 
 #[derive(Clone)]
 pub struct DepthBuffer {
-    pub depth_texture: wgpu::Texture,
+    pub _depth_texture: wgpu::Texture,
     pub depth_view: TextureView,
 }
 
@@ -164,7 +167,7 @@ pub fn create_depth_buffer(device: &Device, width: u32, height: u32,) -> DepthBu
         usage: None,
     });
 
-    DepthBuffer { depth_texture, depth_view }
+    DepthBuffer { _depth_texture: depth_texture, depth_view }
 }
 
 fn create_uniform_layout(device: &Device) -> BindGroupLayout {
@@ -271,6 +274,7 @@ pub fn render_frame(
     session_bundle: &mut SessionBundle,
     action_set_bundle: &ActionSetBundle,
     world: &mut World,
+    #[cfg(not(target_os = "android"))]
     window: &Option<Window>,
 ) {
     // Block until the previous frame is finished displaying, and is ready for another one.
@@ -384,32 +388,37 @@ pub fn render_frame(
     // Submit the previously prepared command buffer
     render_context.queue.submit(Some(command_buffer));
 
-    // Give frame to the window
-    // Ask the staging buffer to map its bytes asynchronously
-    let buffer_slice = render_context.window_staging_buffer.slice(..);
-    let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
-    buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-        sender.send(result).unwrap();
-    });
+    #[cfg(not(target_os = "android"))]
+    {
+        // Give frame to the window
+        // Ask the staging buffer to map its bytes asynchronously
+        let buffer_slice = render_context.window_staging_buffer.slice(..);
+        let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
+        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+            sender.send(result).unwrap();
+        });
 
-    // Poll xr device context to flush and execute the mapping callback
-    let _ = render_context.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
+        // Poll xr device context to flush and execute the mapping callback
+        let _ = render_context.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
 
-    // Block until the mapped range is completely downloaded to CPU memory
-    pollster::block_on(receiver.receive()).unwrap().unwrap();
+        // Block until the mapped range is completely downloaded to CPU memory
+        pollster::block_on(receiver.receive()).unwrap().unwrap();
 
-    // Extract the bytes into a clean standard Vector
-    let raw_bytes = {
-        let data_view = buffer_slice.get_mapped_range();
-        data_view.to_vec()
-    }; // data_view borrow safely drops here
+        // Extract the bytes into a clean standard Vector
+        let raw_bytes = {
+            let data_view = buffer_slice.get_mapped_range();
+            data_view.to_vec()
+        }; // data_view borrow safely drops here
 
-    // Unmap immediately so the GPU is free to reuse it on the next frame loop
-    render_context.window_staging_buffer.unmap();
+        // Unmap immediately so the GPU is free to reuse it on the next frame loop
+        render_context.window_staging_buffer.unmap();
 
-    // Deliver the bytes safely down into your window thread's event loop
-    if let Some(w) = window {
-        w.render(raw_bytes, render_context.xr_render_width, render_context.xr_render_height, render_context.padded_bytes_per_row);
+        // Deliver the bytes safely down into your window thread's event loop
+        #[cfg(not(target_os = "android"))]
+        if let Some(w) = window {
+            w.render(raw_bytes, render_context.xr_render_width, render_context.xr_render_height, render_context.padded_bytes_per_row);
+        }
+
     }
 
     // Finish rest of the shit
@@ -545,6 +554,7 @@ fn record_command_buffer(
     );
 
     // Copy left eye to cpu staging buffer
+    #[cfg(not(target_os = "android"))]
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
             texture: resolved_texture,
