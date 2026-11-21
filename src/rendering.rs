@@ -1,17 +1,13 @@
-use std::{borrow::Cow, num::NonZero};
+use std::{borrow::Cow, num::NonZero, sync::Arc};
 
-use glam::Mat4;
+use anyhow::Context;
+use glam::{Mat4, Vec2};
 use wgpu::{
-    BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
-    BindGroupLayoutEntry, BindingType, Buffer, BufferBindingType, BufferDescriptor, BufferSize,
-    BufferUsages, Color, CommandBuffer, CommandEncoderDescriptor, Device, FragmentState, Instance,
-    LoadOp, Operations, PipelineLayoutDescriptor, PrimitiveState, Queue, RenderPassColorAttachment,
-    RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor, ShaderModuleDescriptor,
-    ShaderSource, ShaderStages, StoreOp, TextureFormat, TextureView, VertexState,
+    BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingType, Buffer, BufferBindingType, BufferDescriptor, BufferSize, BufferUsages, Color, CommandBuffer, CommandEncoderDescriptor, Device, FragmentState, Instance, LoadOp, Operations, PipelineLayoutDescriptor, PrimitiveState, Queue, RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor, Sampler, SamplerBindingType, ShaderModuleDescriptor, ShaderSource, ShaderStages, StoreOp, TextureFormat, TextureSampleType, TextureView, TextureViewDimension, VertexState,
 };
 
 use crate::{
-    VIEW_TYPE, actions::{self, ActionSetBundle}, math, models::Model, session::SessionBundle, world::World,
+    VIEW_TYPE, actions::{self, ActionSetBundle}, math, models::{Assets, Model}, session::SessionBundle, world::World,
 };
 
 #[cfg(not(target_os = "android"))]
@@ -22,6 +18,7 @@ use crate::window::Window;
 struct UniformData {
     matrices: [Mat4; 2],
     model: Mat4,
+    uv_scale: [f32; 4]
 }
 
 pub struct RenderContext {
@@ -33,6 +30,11 @@ pub struct RenderContext {
     pub render_pipeline: RenderPipeline,
 
     pub depth_buffer: Option<DepthBuffer>,
+
+    // Textures
+    pub material_layout: BindGroupLayout,
+    pub default_material: BindGroup,
+    pub sampler: Sampler,
 
     // Window shit
     pub resolved_texture: wgpu::Texture,
@@ -51,9 +53,22 @@ impl RenderContext {
 
         // Create WPGU render pipeline
         let uniform_layout = create_uniform_layout(&device);
-        let render_pipeline = create_render_pipeline(&device, &uniform_layout);
+        let material_layout = create_material_layout(&device);
+        let render_pipeline = create_render_pipeline(&device, &uniform_layout, &material_layout);
 
         let depth_buffer = None;
+
+        // Set up textures
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        
+        let white_view = create_texture_rgba8(&device, &queue, 1, 1, &[255, 255, 255, 255]);
+        let default_material = create_material_bind_group(&device, &material_layout, &white_view, &sampler);
 
         // Set up rendering to the window
         let views = xr_instance
@@ -122,6 +137,10 @@ impl RenderContext {
 
             depth_buffer,
 
+            material_layout,
+            default_material,
+            sampler,
+
             resolved_texture,
             resolved_view,
 
@@ -130,6 +149,21 @@ impl RenderContext {
             xr_render_height: height,
             xr_render_width: width,
         }
+    }
+
+    pub fn load_material(&self, path: &str) -> Arc<wgpu::BindGroup> {
+        let asset = Assets::get(path).with_context(|| format!("Embedded texture not found: {path}")).unwrap();
+
+        let img = image::load_from_memory(&asset.data).expect("Failed to open texture").to_rgba8();
+        let (w, h) = img.dimensions();
+
+        let view = create_texture_rgba8(&self.device, &self.queue, w, h, &img);
+        Arc::new(create_material_bind_group(
+            &self.device,
+            &self.material_layout,
+            &view,
+            &self.sampler,
+        ))
     }
 }
 
@@ -171,7 +205,7 @@ pub fn create_depth_buffer(device: &Device, width: u32, height: u32,) -> DepthBu
 }
 
 fn create_uniform_layout(device: &Device) -> BindGroupLayout {
-    let size = std::mem::size_of::<Mat4>() * 3;
+    let size = std::mem::size_of::<UniformData>();
     let transforms = BindGroupLayoutEntry {
         binding: 0,
         visibility: ShaderStages::VERTEX,
@@ -192,7 +226,7 @@ fn create_uniform_layout(device: &Device) -> BindGroupLayout {
 fn create_uniform_bind_group(device: &Device, layout: &BindGroupLayout) -> (Buffer, BindGroup) {
     let desc = BufferDescriptor {
         label: Some("uniform-buffer"),
-        size: (std::mem::size_of::<Mat4>() * 3) as u64,
+        size: std::mem::size_of::<UniformData>() as u64,
         usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         mapped_at_creation: true,
     };
@@ -213,9 +247,78 @@ fn create_uniform_bind_group(device: &Device, layout: &BindGroupLayout) -> (Buff
     (buffer, bind_group)
 }
 
+pub fn create_texture_rgba8(
+    device: &Device, queue: &Queue, width: u32, height: u32, pixels: &[u8],
+) -> TextureView {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("texture"),
+        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        pixels,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4 * width),
+            rows_per_image: Some(height),
+        },
+        wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+    );
+    texture.create_view(&Default::default())
+}
+
+pub fn create_material_bind_group(
+    device: &Device, layout: &BindGroupLayout, view: &TextureView, sampler: &wgpu::Sampler,
+) -> BindGroup {
+    device.create_bind_group(&BindGroupDescriptor {
+        label: Some("material-bind-group"),
+        layout,
+        entries: &[
+            BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(view) },
+            BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+        ],
+    })
+}
+
+pub fn create_material_layout(device: &Device) -> BindGroupLayout {
+    device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+        label: Some("material-layout"),
+        entries: &[
+            BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Texture {
+                    sample_type: TextureSampleType::Float { filterable: true },
+                    view_dimension: TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                binding: 1,
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Sampler(SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    })
+}
+
 fn create_render_pipeline(
     wgpu_device: &Device,
     uniform_layout: &BindGroupLayout,
+    material_layout: &BindGroupLayout,
 ) -> RenderPipeline {
     let shader = wgpu_device.create_shader_module(ShaderModuleDescriptor {
         label: None,
@@ -224,7 +327,7 @@ fn create_render_pipeline(
 
     let pipeline_layout = wgpu_device.create_pipeline_layout(&PipelineLayoutDescriptor {
         label: None,
-        bind_group_layouts: &[uniform_layout],
+        bind_group_layouts: &[uniform_layout, material_layout],
         immediate_size: 0,
     });
 
@@ -285,18 +388,9 @@ pub fn render_frame(
     // Must be called before any rendering is done!
     session_bundle.frame_stream.begin().unwrap();
 
-    if !xr_frame_state.should_render {
-        session_bundle
-            .frame_stream
-            .end(
-                xr_frame_state.predicted_display_time,
-                environment_blend_mode,
-                &[],
-            )
-            .unwrap();
-        return;
-    }
-
+    // Is the headset on?
+    world.headset_on = xr_frame_state.should_render;
+    
     // We need to ask which swapchain image to use for rendering! Which one will we get?
     // Who knows! It's up to the runtime to decide.
     let image_index = session_bundle
@@ -353,6 +447,7 @@ pub fn render_frame(
             &buffer,
             &xr_views,
             model_matrix,
+            model.uv_scale,
         );
 
         model_uniforms.push((buffer, bind_group));
@@ -374,6 +469,8 @@ pub fn render_frame(
         models.clone(),
         &render_context.resolved_texture,
         source_texture,
+        &render_context.material_layout,
+        &render_context.default_material,
         &render_context.window_staging_buffer,
         render_context.padded_bytes_per_row,
         render_context.xr_render_width,
@@ -450,6 +547,10 @@ fn record_command_buffer(
     // OpenXR swapchain texture
     xr_texture_destination: &wgpu::Texture,
 
+    // Materials
+    material_layout: &BindGroupLayout,
+    default_material: &BindGroup,
+
     // Desktop window
     window_staging_buffer_destination: &wgpu::Buffer,
     padded_bytes_per_row: u32,
@@ -471,8 +572,8 @@ fn record_command_buffer(
             // Don't resolve directly into OpenXR.
             resolve_target: Some(resolved_view),
 
-            ops: Operations {
-                load: LoadOp::Clear(Color::BLUE),
+            ops: Operations { // Sky colour
+                load: LoadOp::Clear(Color::BLACK),
                 store: StoreOp::Discard,
             },
         };
@@ -513,6 +614,9 @@ fn record_command_buffer(
             );
 
             for mesh in &model.meshes {
+                let material = mesh.material.as_deref().unwrap_or(default_material);
+                render_pass.set_bind_group(1, material, &[]);
+
                 render_pass.set_vertex_buffer(
                     0,
                     mesh.vertex_buffer.slice(..),
@@ -595,6 +699,7 @@ fn write_uniform_buffer(
     buffer: &Buffer,
     xr_views: &[openxr::View],
     model: Mat4,
+    uv_scale: Vec2,
 ) {
     let data = UniformData {
         matrices: [
@@ -602,6 +707,7 @@ fn write_uniform_buffer(
             math::matrix_from_view(&xr_views[1]),
         ],
         model,
+        uv_scale: [uv_scale.x, uv_scale.y, 0.0, 0.0],
     };
 
     let contents = bytemuck::bytes_of(&data);

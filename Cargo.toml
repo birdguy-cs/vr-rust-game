@@ -8,8 +8,6 @@ glam = { version = "0.33.5", features = ["bytemuck"] }
 rapier3d = "0.35.2"
 wgpu = "28"
 indite = { git = "https://github.com/celphase/indite" }
-# openxr = "0.21"
-# TODO: Figure out if this is working properly
 ctrlc = "3.5.2"
 anyhow = "1.0.104"
 bytemuck = "1.25.2"
@@ -17,6 +15,7 @@ gltf = "1.4.1"
 rust-embed = { version = "8.12.0", features = ["debug-embed"] }
 pollster = "1.0.1"
 futures-intrusive = "0.5.0"
+image = "0.25.10"
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 openxr = { version = "0.21", features = ["static"] }

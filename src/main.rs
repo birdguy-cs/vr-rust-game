@@ -41,6 +41,14 @@ pub fn main() -> Result<(), Error> { run(()) }
 
 #[allow(unused_variables)]
 pub fn run(app: AppHandle) -> Result<(), Error> {
+    #[cfg(target_os = "android")]
+    let mut android_state = AndroidState::default();
+    #[cfg(target_os = "android")]
+    while !(android_state.resumed && android_state.has_window) {
+        pump_android(&app, Duration::from_millis(100), &mut android_state);
+        if android_state.destroy { return Ok(()); }
+    }
+
     #[cfg(not(target_os = "android"))]
     let ctrlc_request_exit = create_ctrlc_handler();
     #[cfg(target_os = "android")]
@@ -94,52 +102,48 @@ pub fn run(app: AppHandle) -> Result<(), Error> {
     let mut session_running = false;
 
     // Create the game world and the window
-    let mut game_world = World::new(&render_context.device);
+    let ground_mat = render_context.load_material("grass-3937-in-architextures.jpg");
+
+    let mut game_world = World::new(&render_context.device, ground_mat);
     #[cfg(not(target_os = "android"))]
     let window: Option<window::Window> = Some(window::create_window());
     #[cfg(target_os = "android")]
     let window: Option<String> = None;
 
     loop {
-        let should_continue = handle_ctrlc(&ctrlc_request_exit, &session_bundle.session);
-        if !should_continue {
+        if !handle_ctrlc(&ctrlc_request_exit, &session_bundle.session) {
             break;
         }
-
+    
         #[cfg(target_os = "android")]
         {
-            use android_activity::{MainEvent, PollEvent};
-            let mut destroy = false;
-            app.poll_events(Some(Duration::ZERO), |ev| {
-                if let PollEvent::Main(MainEvent::Destroy) = ev { destroy = true; }
-            });
-            if destroy { break; }
+            let timeout = if session_running { Duration::ZERO } else { Duration::from_millis(100) };
+            pump_android(&app, timeout, &mut android_state);
+            if android_state.destroy { break; }
         }
-
-        let should_continue = handle_instance_events(
+    
+        if !handle_instance_events(
             &xr_instance,
             &session_bundle.session,
             &mut event_storage,
             &mut session_running,
-        );
-        if !should_continue {
+        ) {
             break;
         }
-
+    
         #[cfg(not(target_os = "android"))]
         if let Some(window) = &window {
-            let should_continue = !window.exit.load(Ordering::Relaxed);
-            if !should_continue {
+            if window.exit.load(Ordering::Relaxed) {
                 break;
             }
         }
-
+    
         if !session_running {
-            // Don't hotloop the CPU
+            #[cfg(not(target_os = "android"))]
             std::thread::sleep(Duration::from_millis(100));
             continue;
         }
-
+    
         game_world.tick();
 
         rendering::render_frame(
@@ -301,6 +305,36 @@ fn android_main(app: android_activity::AndroidApp) {
         eprintln!("Game crashed: {e:?}");
     }
 }
+
+#[cfg(target_os = "android")]
+fn pump_android(app: &android_activity::AndroidApp, timeout: Duration, state: &mut AndroidState) {
+    use android_activity::{InputStatus, MainEvent, PollEvent};
+
+    app.poll_events(Some(timeout), |ev| {
+        if let PollEvent::Main(main_ev) = ev {
+            match main_ev {
+                MainEvent::Resume { .. } => state.resumed = true,
+                MainEvent::Pause => state.resumed = false,
+                MainEvent::InitWindow { .. } => state.has_window = true,
+                MainEvent::TerminateWindow { .. } => state.has_window = false,
+                MainEvent::Destroy => state.destroy = true,
+                _ => {}
+            }
+        }
+    });
+
+    // Drain input so the system doesn't think you're hung.
+    // android-activity 0.6+ (iterator API):
+    if let Ok(mut iter) = app.input_events_iter() {
+        while iter.next(|_event| InputStatus::Unhandled) {}
+    }
+    // android-activity <= 0.5 instead:
+    // app.input_events(|_e| InputStatus::Unhandled);
+}
+
+#[cfg(target_os = "android")]
+#[derive(Default)]
+struct AndroidState { resumed: bool, has_window: bool, destroy: bool }
 
 #[cfg(target_os = "android")]
 fn main() {}

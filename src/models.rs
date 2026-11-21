@@ -1,11 +1,13 @@
-use glam::{Quat, Vec3};
+use std::sync::Arc;
+
+use glam::{Quat, Vec2, Vec3};
 use anyhow::{Context, Result};
-use wgpu::util::DeviceExt;
+use wgpu::{util::DeviceExt, BindGroup};
 use rust_embed::Embed;
 
 #[derive(Embed)]
 #[folder = "assets/"]
-struct Assets;
+pub struct Assets;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -49,6 +51,7 @@ pub struct Model {
     pub position: Vec3,
     pub rotation: Quat,
     pub scale: Vec3,
+    pub uv_scale: Vec2,
 }
 
 #[derive(Clone)]
@@ -59,6 +62,7 @@ pub struct Mesh {
 
     pub vertices: Vec<[f32; 3]>,
     pub indices: Vec<u32>,
+    pub material: Option<Arc<BindGroup>>,
 }
 
 impl Model {
@@ -91,6 +95,7 @@ impl Model {
             position: Vec3::ZERO,
             rotation: Quat::IDENTITY,
             scale: Vec3::ONE,
+            uv_scale: Vec2::ONE,
         })
     }
 
@@ -166,6 +171,7 @@ impl Model {
                     index_count: indices.len() as u32,
                     vertices: positions,
                     indices,
+                    material: None,
                 });
             }
         }
@@ -180,5 +186,11 @@ impl Model {
         }
 
         Ok(())
+    }
+
+    pub fn set_mat(&mut self, material: Arc<BindGroup>) {
+        for mesh in self.meshes.iter_mut() {
+            mesh.material = Some(material.clone());
+        }
     }
 }
