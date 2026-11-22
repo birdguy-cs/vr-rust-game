@@ -12,6 +12,7 @@ pub struct SessionBundle {
     pub swapchain_handle: SwapchainHandle,
     pub swapchain_textures: Vec<(Texture, TextureView)>,
     pub stage: openxr::Space,
+    pub view_space: openxr::Space,
 
     pub multisampled_framebuffer: TextureView,
 }
@@ -58,6 +59,10 @@ pub fn create_session(
         .create_reference_space(openxr::ReferenceSpaceType::STAGE, openxr::Posef::IDENTITY)
         .unwrap();
 
+    let view_space = xr_session
+        .create_reference_space(openxr::ReferenceSpaceType::VIEW, openxr::Posef::IDENTITY)
+        .unwrap();
+
     let multisampled_framebuffer =
         create_multisampled_framebuffer(&render_context.device, &swapchain_desc);
 
@@ -70,6 +75,7 @@ pub fn create_session(
         swapchain_handle,
         swapchain_textures,
         stage,
+        view_space,
 
         multisampled_framebuffer,
     }

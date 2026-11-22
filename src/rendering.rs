@@ -1,7 +1,8 @@
 use std::{borrow::Cow, num::NonZero, sync::Arc};
 
 use anyhow::Context;
-use glam::{Mat4, Vec2};
+use glam::{Affine3A, Mat4, Quat, Vec2, Vec3};
+use openxr::sys::SessionActionSetsAttachInfo;
 use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingType, Buffer, BufferBindingType, BufferDescriptor, BufferSize, BufferUsages, Color, CommandBuffer, CommandEncoderDescriptor, Device, FragmentState, Instance, LoadOp, Operations, PipelineLayoutDescriptor, PrimitiveState, Queue, RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor, Sampler, SamplerBindingType, ShaderModuleDescriptor, ShaderSource, ShaderStages, StoreOp, TextureFormat, TextureSampleType, TextureView, TextureViewDimension, VertexState,
 };
@@ -18,7 +19,8 @@ use crate::window::Window;
 struct UniformData {
     matrices: [Mat4; 2],
     model: Mat4,
-    uv_scale: [f32; 4]
+    uv_scale: [f32; 4],
+    colour_shift: [f32; 4],
 }
 
 pub struct RenderContext {
@@ -346,7 +348,12 @@ fn create_render_pipeline(
             compilation_options: Default::default(),
             targets: &[Some(TextureFormat::Rgba8UnormSrgb.into())],
         }),
-        primitive: PrimitiveState::default(),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: Some(wgpu::Face::Back),
+            ..Default::default()
+        },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: wgpu::TextureFormat::Depth32Float,
             depth_write_enabled: true,
@@ -370,6 +377,10 @@ fn create_model_uniform(
     create_uniform_bind_group(device, layout)
 }
 
+fn to_world(rig: &Affine3A, rig_rot: Quat, pos: Vec3, rot: Quat) -> (Vec3, Quat) {
+    (rig.transform_point3(pos), rig_rot * rot)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn render_frame(
     environment_blend_mode: openxr::EnvironmentBlendMode,
@@ -390,7 +401,20 @@ pub fn render_frame(
 
     // Is the headset on?
     world.headset_on = xr_frame_state.should_render;
+    let head = session_bundle.view_space.locate(&session_bundle.stage, xr_frame_state.predicted_display_time).unwrap();
     
+    if head.location_flags.contains(
+        openxr::SpaceLocationFlags::POSITION_VALID | openxr::SpaceLocationFlags::ORIENTATION_VALID,
+    ) {
+        let p = head.pose.position;
+        let o = head.pose.orientation;
+        let head_pos = glam::Vec3::new(p.x, p.y, p.z);
+        let head_rot = glam::Quat::from_xyzw(o.x, o.y, o.z, o.w);
+
+        world.player.head_rotation = head_rot;
+        world.player.head_position = head_pos;
+    }
+
     // We need to ask which swapchain image to use for rendering! Which one will we get?
     // Who knows! It's up to the runtime to decide.
     let image_index = session_bundle
@@ -414,6 +438,13 @@ pub fn render_frame(
     // Get the texture
     let (source_texture, _) = &session_bundle.swapchain_textures[image_index as usize];
 
+    // Set up transforms
+    let rig = Affine3A::from_rotation_translation(world.player.rotation, world.player.position);
+
+    let (left_pos, left_rot)   = to_world(&rig, world.player.rotation, world.hands.left_position,  world.hands.left_rotation);
+    let (right_pos, right_rot) = to_world(&rig, world.player.rotation, world.hands.right_position, world.hands.right_rotation);
+    let (head_pos, head_rot)   = to_world(&rig, world.player.rotation, world.player.head_position,   world.player.head_rotation);
+
     // Fetch the view transforms. To minimize latency, we intentionally do this *after*
     // recording commands to render the scene, i.e. at the last possible moment before
     // rendering begins in earnest on the GPU. Uniforms dependent on this data can be sent
@@ -427,6 +458,26 @@ pub fn render_frame(
             &session_bundle.stage,
         )
         .unwrap();
+
+    let world_views: Vec<openxr::View> = xr_views
+        .iter()
+        .map(|v| {
+            let p = v.pose.position;
+            let o = v.pose.orientation;
+            let (wp, wr) = to_world(
+                &rig,
+                world.player.rotation,
+                Vec3::new(p.x, p.y, p.z),
+                Quat::from_xyzw(o.x, o.y, o.z, o.w),
+            );
+            let mut nv = *v;
+            nv.pose = openxr::Posef {
+                orientation: openxr::Quaternionf { x: wr.x, y: wr.y, z: wr.z, w: wr.w },
+                position: openxr::Vector3f { x: wp.x, y: wp.y, z: wp.z },
+            };
+            nv
+        })
+        .collect();
 
     let mut model_uniforms = Vec::new();
 
@@ -445,9 +496,10 @@ pub fn render_frame(
 
         write_uniform_buffer(
             &buffer,
-            &xr_views,
+            &world_views,
             model_matrix,
             model.uv_scale,
+            model.colour_shift,
         );
 
         model_uniforms.push((buffer, bind_group));
@@ -700,6 +752,7 @@ fn write_uniform_buffer(
     xr_views: &[openxr::View],
     model: Mat4,
     uv_scale: Vec2,
+    colour_shift: Vec3,
 ) {
     let data = UniformData {
         matrices: [
@@ -708,6 +761,7 @@ fn write_uniform_buffer(
         ],
         model,
         uv_scale: [uv_scale.x, uv_scale.y, 0.0, 0.0],
+        colour_shift: [colour_shift.x, colour_shift.y, colour_shift.z, 0.0],
     };
 
     let contents = bytemuck::bytes_of(&data);

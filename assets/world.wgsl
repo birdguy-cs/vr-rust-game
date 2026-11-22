@@ -2,12 +2,14 @@ struct UniformData {
     matrices: array<mat4x4<f32>, 2>,
     model: mat4x4<f32>,
     uv_scale: vec4<f32>,
+    colour_shift: vec4<f32>,
 }
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) normal: vec3<f32>,
     @location(1) uv: vec2<f32>,
+    @location(2) colour_shift: vec3<f32>,
 }
 
 @group(0) @binding(0) var<uniform> u_data: UniformData;
@@ -30,6 +32,7 @@ fn vs_main(
     output.position = matrix * world_position;
     output.normal = normalize((u_data.model * vec4<f32>(normal, 0.0)).xyz);
     output.uv = uv * u_data.uv_scale.xy;
+    output.colour_shift = u_data.colour_shift.xyz;
 
     return output;
 }
@@ -43,7 +46,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let ambient = 0.2;
     let lighting = ambient + brightness * 0.8;
 
-    let base_color = textureSample(t_diffuse, s_diffuse, input.uv).rgb * vec3<f32>(0.8);
+    let base_color = textureSample(t_diffuse, s_diffuse, input.uv).rgb * input.colour_shift;
 
     return vec4<f32>(base_color * lighting, 1.0);
 }

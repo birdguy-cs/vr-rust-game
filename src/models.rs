@@ -51,6 +51,7 @@ pub struct Model {
     pub position: Vec3,
     pub rotation: Quat,
     pub scale: Vec3,
+    pub colour_shift: Vec3,
     pub uv_scale: Vec2,
 }
 
@@ -95,6 +96,7 @@ impl Model {
             position: Vec3::ZERO,
             rotation: Quat::IDENTITY,
             scale: Vec3::ONE,
+            colour_shift: Vec3::new(0.8, 0.8, 0.8),
             uv_scale: Vec2::ONE,
         })
     }

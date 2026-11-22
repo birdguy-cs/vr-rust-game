@@ -1,6 +1,9 @@
+use glam::Quat;
 use rapier3d::prelude::*;
 
 use crate::models::Model;
+
+pub static mut GRAVITY: Vector3 = Vector::new(0.0, -9.81, 0.0);
 
 pub struct PhysicsObject {
     pub collider: ColliderHandle,
@@ -10,7 +13,6 @@ pub struct PhysicsObject {
 pub struct PhysicsManager {
     pub rigid_body_set: RigidBodySet,
     pub collider_set: ColliderSet,
-    pub gravity: Vector3,
     integration_parameters: IntegrationParameters,
     physics_pipeline: PhysicsPipeline,
     island_manager: IslandManager,
@@ -28,7 +30,6 @@ impl PhysicsManager {
         // Create all structures necessary for physics simulation
         let rigid_body_set = RigidBodySet::new();
         let collider_set = ColliderSet::new();
-        let gravity = Vector::new(0.0, -9.81, 0.0);
         let integration_parameters = IntegrationParameters::default();
         let physics_pipeline = PhysicsPipeline::new();
         let island_manager = IslandManager::new();
@@ -43,7 +44,6 @@ impl PhysicsManager {
         let physics_manager = PhysicsManager {
             rigid_body_set,
             collider_set,
-            gravity,
             integration_parameters,
             physics_pipeline,
             island_manager,
@@ -61,7 +61,7 @@ impl PhysicsManager {
 
     pub fn physics_tick(&mut self) {
         self.physics_pipeline.step(
-            self.gravity,
+            unsafe { GRAVITY },
             &self.integration_parameters,
             &mut self.island_manager,
             &mut self.broad_phase,
@@ -74,6 +74,21 @@ impl PhysicsManager {
             &self.physics_hooks,
             &self.event_handler,
         );
+    }
+
+    pub fn set_rigid_position(&mut self, position: Vec3, rotation: Quat, wake_up: bool, rb: RigidBodyHandle) {
+        let pose = Pose3::from_parts(position, rotation);
+
+        if let Some(rb) = self.rigid_body_set.get_mut(rb) {
+            rb.set_position(pose, wake_up);
+        }
+    }
+
+    pub fn set_rigid_kinematic_target(&mut self, position: Vec3, rotation: Quat, rb: RigidBodyHandle) {
+        let pose = Pose3::from_parts(position, rotation);
+        if let Some(rb) = self.rigid_body_set.get_mut(rb) {
+            rb.set_next_kinematic_position(pose);
+        }
     }
 
     pub fn create_new_object(&mut self, position: Vec3, rotation: Vec3, kinematic: bool, model: Model) -> PhysicsObject {

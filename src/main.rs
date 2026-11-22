@@ -12,6 +12,7 @@ mod models;
 mod window;
 mod logging;
 mod physics_manager;
+mod player;
 
 #[cfg(target_os = "android")]
 type AppHandle = android_activity::AndroidApp;
