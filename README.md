@@ -1,5 +1,5 @@
-# vr-rust-game
-A simple vr game made in the rust programming language.
+# vr-rust-game engine
+A simple vr game engine made in the rust programming language.
 
 Code is partially based on the indite example w/ some help from AI.
 
