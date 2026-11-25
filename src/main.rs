@@ -84,7 +84,6 @@ pub fn run(app: AppHandle) -> Result<(), Error> {
 
     let mut render_context = RenderContext::new(&xr_instance, xr_system);
     let mut session_bundle = session::create_session(&xr_instance, xr_system, &render_context);
-    let action_set_bundle = actions::create_action_set(&xr_instance, &session_bundle.session);
 
     let views = xr_instance
         .enumerate_view_configuration_views(
@@ -105,7 +104,7 @@ pub fn run(app: AppHandle) -> Result<(), Error> {
     // Create the game world and the window
     let ground_mat = render_context.load_material("grass-3937-in-architextures.jpg");
 
-    let mut game_world = World::new(&render_context.device, ground_mat);
+    let mut game_world = World::new(&render_context.device, ground_mat, actions::create_action_set(&xr_instance, &session_bundle.session));
     #[cfg(not(target_os = "android"))]
     let window: Option<window::Window> = Some(window::create_window());
     #[cfg(target_os = "android")]
@@ -145,13 +144,12 @@ pub fn run(app: AppHandle) -> Result<(), Error> {
             continue;
         }
     
-        game_world.tick();
+        game_world.tick(&session_bundle.session);
 
         rendering::render_frame(
             environment_blend_mode,
             &render_context,
             &mut session_bundle,
-            &action_set_bundle,
             &mut game_world,
             #[cfg(not(target_os = "android"))]
             &window,

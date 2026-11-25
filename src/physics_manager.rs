@@ -101,47 +101,56 @@ impl PhysicsManager {
             RigidBodyBuilder::dynamic()
                 .translation(position)
                 .rotation(rotation)
+                .ccd_enabled(true) // stops fast objects tunnelling through thin floors
                 .build()
         };
-
+    
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
-
+    
         for mesh in &model.meshes {
             let vertex_offset = vertices.len() as u32;
-
+    
             vertices.extend(
                 mesh.vertices
                     .iter()
                     .map(|v| [
                         v[0] * model.scale.x,
                         v[1] * model.scale.y,
-                        v[2] * model.scale.z
-                    ])
+                        v[2] * model.scale.z,
+                    ]),
             );
-
-            indices.extend(
-                mesh.indices
-                    .iter()
-                    .map(|index| index + vertex_offset)
-            );
+    
+            indices.extend(mesh.indices.iter().map(|index| index + vertex_offset));
         }
+    
         let points: Vec<Vector> = vertices
             .iter()
             .map(|p| Vector::new(p[0], p[1], p[2]))
             .collect();
-
-        let triangles: Vec<[u32; 3]> = indices
-            .chunks_exact(3)
-            .map(|i| [i[0], i[1], i[2]])
-            .collect();
-
-        let collider = ColliderBuilder::trimesh(points, triangles).expect("Failed to create mesh");
-
+    
+        let collider = if kinematic {
+            // Static / kinematic world geometry (floor, walls, hands): exact mesh is fine
+            let triangles: Vec<[u32; 3]> = indices
+                .chunks_exact(3)
+                .map(|i| [i[0], i[1], i[2]])
+                .collect();
+    
+            ColliderBuilder::trimesh(points, triangles).expect("Failed to create trimesh")
+        } else {
+            // Dynamic objects need a solid shape with real volume (mass, inertia, stable contacts)
+            ColliderBuilder::convex_hull(&points)
+                .expect("Failed to create convex hull")
+                .friction(0.7)
+                .restitution(0.3)
+        };
+    
         let rigid_body_handle = self.rigid_body_set.insert(rigid_body);
-
-        let collider_handle = self.collider_set.insert_with_parent(collider, rigid_body_handle, &mut self.rigid_body_set);
-
+    
+        let collider_handle =
+            self.collider_set
+                .insert_with_parent(collider, rigid_body_handle, &mut self.rigid_body_set);
+    
         PhysicsObject { collider: collider_handle, rigidbody: rigid_body_handle }
     }
 }
