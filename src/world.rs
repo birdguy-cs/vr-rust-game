@@ -98,6 +98,9 @@ impl World {
         let delta = (now - self.last_tick).as_secs_f32();
         self.last_tick = now;
 
+        if self.hands.left_controls.touchpad { self.actions.rumble(session, true,  40.0,  40); }
+        if self.hands.right_controls.touchpad { self.actions.rumble(session, false, 40.0, 40); }
+
         self.player.update(&mut self.physics_manager, &self.hands, delta);
 
         self.physics_manager.physics_tick();
