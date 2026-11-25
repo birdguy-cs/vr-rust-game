@@ -386,7 +386,6 @@ pub fn render_frame(
     environment_blend_mode: openxr::EnvironmentBlendMode,
     render_context: &RenderContext,
     session_bundle: &mut SessionBundle,
-    action_set_bundle: &ActionSetBundle,
     world: &mut World,
     #[cfg(not(target_os = "android"))]
     window: &Option<Window>,
@@ -426,7 +425,7 @@ pub fn render_frame(
 
     let hand_pos = actions::get_hands(
         &session_bundle.session,
-        action_set_bundle,
+        &world.actions,
         &session_bundle.stage,
         &xr_frame_state,
     );

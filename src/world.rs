@@ -1,9 +1,10 @@
 use std::sync::Arc;
 use glam::{Vec2, Vec3};
+use openxr::{Session, Vulkan};
 use wgpu::{BindGroup, Device};
 use std::time::Instant;
 
-use crate::{actions::XRHands, models::Model, physics_manager::{PhysicsManager, PhysicsObject}, player::Player};
+use crate::{actions::{ActionSetBundle, XRHands}, models::Model, physics_manager::{PhysicsManager, PhysicsObject}, player::Player};
 
 pub struct GameObject {
     pub model: Model,
@@ -31,12 +32,13 @@ pub struct World {
     pub headset_on: bool,
     headset_on_last: bool,
     pub player: Player,
+    pub actions: ActionSetBundle,
     world_objects: Vec<GameObject>,
     last_tick: Instant,
 }
 
 impl World {
-    pub fn new(device: &Device, ground_texture: Arc<BindGroup>) -> World {
+    pub fn new(device: &Device, ground_texture: Arc<BindGroup>, actions: ActionSetBundle) -> World {
         let mut sphere = Model::load(&device, "sphere.glb").expect("Couldn't load sphere model");
         let mut cube = Model::load(&device, "cube.glb").expect("Couldn't load cube model");
         let mut left_hand_model = Model::load(&device, "sphere.glb").expect("Couldn't load left hand model");
@@ -82,6 +84,7 @@ impl World {
             headset_on: true,
             headset_on_last: true,
             player: Player::new(left_hand, right_hand),
+            actions,
             world_objects,
             last_tick: Instant::now(),
         };
@@ -89,12 +92,14 @@ impl World {
         world
     }
 
-    pub fn tick(&mut self) {
+    pub fn tick(&mut self, session: &Session<Vulkan>) {
         // Deltatime
         let now = Instant::now();
         let delta = (now - self.last_tick).as_secs_f32();
         self.last_tick = now;
 
+        if self.hands.left_controls.touchpad { self.actions.rumble(session, true,  40.0,  40); }
+        if self.hands.right_controls.touchpad { self.actions.rumble(session, false, 40.0, 40); }
 
         self.player.update(&mut self.physics_manager, &self.hands, delta);
 

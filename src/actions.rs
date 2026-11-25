@@ -12,8 +12,23 @@ pub struct ActionSetBundle {
     pub secondary: openxr::Action<bool>,
     pub touchpad: openxr::Action<bool>,
     pub stick: openxr::Action<openxr::Vector2f>,
+    pub haptic: openxr::Action<openxr::Haptic>,
     pub left_path: openxr::Path,
     pub right_path: openxr::Path,
+}
+
+impl ActionSetBundle {
+    pub fn rumble(&self, session: &openxr::Session<openxr::Vulkan>, left: bool, amplitude: f32, millis: i64) {
+        let path = if left { self.left_path } else { self.right_path };
+        let _ = self.haptic.apply_feedback(
+            session,
+            path,
+            &openxr::HapticVibration::new()
+                .amplitude(amplitude)
+                .frequency(openxr::FREQUENCY_UNSPECIFIED)
+                .duration(openxr::Duration::from_nanos(millis * 1_000_000)),
+        );
+    }
 }
 
 // Add more as wanted / needed
@@ -36,6 +51,9 @@ pub fn create_action_set(
     let right_action = action_set
         .create_action::<openxr::Posef>("right_hand", "Right Hand Controller", &[])
         .unwrap();
+
+    // Haptic feedback
+    let haptic = action_set.create_action::<openxr::Haptic>("haptic", "Haptic feedback", &hands).unwrap();
 
     // Buttons / analog, one action per input, usable on both hands
     let trigger = action_set.create_action::<f32>("trigger", "Trigger", &hands).unwrap();
@@ -78,6 +96,8 @@ pub fn create_action_set(
             openxr::Binding::new(&touchpad, p("/user/hand/right/input/trackpad/touch")),
             openxr::Binding::new(&stick, p("/user/hand/left/input/thumbstick")),
             openxr::Binding::new(&stick, p("/user/hand/right/input/thumbstick")),
+            openxr::Binding::new(&haptic, p("/user/hand/left/output/haptic")),
+            openxr::Binding::new(&haptic, p("/user/hand/right/output/haptic")),
         ],
     );
 
@@ -97,6 +117,8 @@ pub fn create_action_set(
             openxr::Binding::new(&touchpad, p("/user/hand/right/input/thumbrest/touch")),
             openxr::Binding::new(&stick, p("/user/hand/left/input/thumbstick")),
             openxr::Binding::new(&stick, p("/user/hand/right/input/thumbstick")),
+            openxr::Binding::new(&haptic, p("/user/hand/left/output/haptic")),
+            openxr::Binding::new(&haptic, p("/user/hand/right/output/haptic")),
         ],
     );
 
@@ -121,6 +143,7 @@ pub fn create_action_set(
         secondary,
         touchpad,
         stick,
+        haptic,
         left_path,
         right_path,
     }
